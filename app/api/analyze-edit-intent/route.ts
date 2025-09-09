@@ -3,10 +3,11 @@ import { createGroq } from '@ai-sdk/groq';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { generateObject } from 'ai';
+import { generateObject, type LanguageModelV2 } from 'ai';
 import { z } from 'zod';
 import type { FileManifest } from '@/types/file-manifest';
 
+// --- Providers (clients) -----------------------------------------------------
 const groq = createGroq({
   apiKey: process.env.GROQ_API_KEY,
 });
@@ -21,98 +22,112 @@ const openai = createOpenAI({
   baseURL: process.env.OPENAI_BASE_URL,
 });
 
-// Schema for the AI's search plan - not file selection!
+// ATENÇÃO: para Google precisamos criar o *client* e depois chamar com o model:
+const googleClient = createGoogleGenerativeAI({
+  apiKey: process.env.GOOGLE_API_KEY,
+  baseURL: process.env.GOOGLE_BASE_URL, // opcional, se usar proxy
+});
+
+// --- Schema para o plano de busca --------------------------------------------
 const searchPlanSchema = z.object({
   editType: z.enum([
     'UPDATE_COMPONENT',
-    'ADD_FEATURE', 
+    'ADD_FEATURE',
     'FIX_ISSUE',
     'UPDATE_STYLE',
     'REFACTOR',
     'ADD_DEPENDENCY',
-    'REMOVE_ELEMENT'
+    'REMOVE_ELEMENT',
   ]).describe('The type of edit being requested'),
-  
+
   reasoning: z.string().describe('Explanation of the search strategy'),
-  
+
   searchTerms: z.array(z.string()).describe('Specific text to search for (case-insensitive). Be VERY specific - exact button text, class names, etc.'),
-  
+
   regexPatterns: z.array(z.string()).optional().describe('Regex patterns for finding code structures (e.g., "className=[\\"\\\'].*header.*[\\"\\\']")'),
-  
+
   fileTypesToSearch: z.array(z.string()).default(['.jsx', '.tsx', '.js', '.ts']).describe('File extensions to search'),
-  
+
   expectedMatches: z.number().min(1).max(10).default(1).describe('Expected number of matches (helps validate search worked)'),
-  
+
   fallbackSearch: z.object({
     terms: z.array(z.string()),
-    patterns: z.array(z.string()).optional()
-  }).optional().describe('Backup search if primary fails')
+    patterns: z.array(z.string()).optional(),
+  }).optional().describe('Backup search if primary fails'),
 });
 
 export async function POST(request: NextRequest) {
   try {
     const { prompt, manifest, model = 'openai/gpt-oss-20b' } = await request.json();
-    
+
     console.log('[analyze-edit-intent] Request received');
     console.log('[analyze-edit-intent] Prompt:', prompt);
     console.log('[analyze-edit-intent] Model:', model);
-    console.log('[analyze-edit-intent] Manifest files count:', manifest?.files ? Object.keys(manifest.files).length : 0);
-    
+    console.log(
+      '[analyze-edit-intent] Manifest files count:',
+      manifest?.files ? Object.keys(manifest.files).length : 0
+    );
+
     if (!prompt || !manifest) {
-      return NextResponse.json({
-        error: 'prompt and manifest are required'
-      }, { status: 400 });
+      return NextResponse.json(
+        { error: 'prompt and manifest are required' },
+        { status: 400 }
+      );
     }
-    
-    // Create a summary of available files for the AI
+
+    // Cria um resumo dos arquivos válidos
     const validFiles = Object.entries(manifest.files as Record<string, any>)
-      .filter(([path, info]) => {
-        // Filter out invalid paths
-        return path.includes('.') && !path.match(/\/\d+$/);
-      });
-    
+      .filter(([path]) => path.includes('.') && !path.match(/\/\d+$/));
+
     const fileSummary = validFiles
       .map(([path, info]: [string, any]) => {
         const componentName = info.componentInfo?.name || path.split('/').pop();
-        const hasImports = info.imports?.length > 0;
         const childComponents = info.componentInfo?.childComponents?.join(', ') || 'none';
         return `- ${path} (${componentName}, renders: ${childComponents})`;
       })
       .join('\n');
-    
+
     console.log('[analyze-edit-intent] Valid files found:', validFiles.length);
-    
+
     if (validFiles.length === 0) {
       console.error('[analyze-edit-intent] No valid files found in manifest');
-      return NextResponse.json({
-        success: false,
-        error: 'No valid files found in manifest'
-      }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: 'No valid files found in manifest' },
+        { status: 400 }
+      );
     }
-    
+
     console.log('[analyze-edit-intent] Analyzing prompt:', prompt);
-    console.log('[analyze-edit-intent] File summary preview:', fileSummary.split('\n').slice(0, 5).join('\n'));
-    
-    // Select the appropriate AI model based on the request
-    let aiModel;
+    console.log(
+      '[analyze-edit-intent] File summary preview:',
+      fileSummary.split('\n').slice(0, 5).join('\n')
+    );
+
+    // Seleciona o modelo correto e garante o tipo LanguageModelV2
+    let aiModel: LanguageModelV2;
+
     if (model.startsWith('anthropic/')) {
       aiModel = anthropic(model.replace('anthropic/', ''));
     } else if (model.startsWith('openai/')) {
+      // Suporte especial ao "gpt-oss" mapeando para Groq, se for a sua intenção
       if (model.includes('gpt-oss')) {
-        aiModel = groq(model);
+        aiModel = groq(model); // mantém seu comportamento atual
       } else {
         aiModel = openai(model.replace('openai/', ''));
       }
     } else if (model.startsWith('google/')) {
-      aiModel = createGoogleGenerativeAI(model.replace('google/', ''));
+      // AQUI estava o erro: agora pegamos o *model* do client
+      aiModel = googleClient(model.replace('google/', ''));
+    } else if (model.startsWith('groq/')) {
+      aiModel = groq(model.replace('groq/', ''));
     } else {
-      // Default to groq if model format is unclear
+      // fallback: use Groq com o nome como está
       aiModel = groq(model);
     }
-    
+
     console.log('[analyze-edit-intent] Using AI model:', model);
-    
-    // Use AI to create a search plan
+
+    // Gera o plano de busca
     const result = await generateObject({
       model: aiModel,
       schema: searchPlanSchema,
@@ -146,35 +161,33 @@ SEARCH STRATEGY RULES:
    - Add regex patterns for structural searches
 
 Current project structure for context:
-${fileSummary}`
+${fileSummary}`,
         },
         {
           role: 'user',
           content: `User request: "${prompt}"
 
-Create a search plan to find the exact code that needs to be modified. Include specific search terms and patterns.`
-        }
-      ]
+Create a search plan to find the exact code that needs to be modified. Include specific search terms and patterns.`,
+        },
+      ],
     });
-    
+
     console.log('[analyze-edit-intent] Search plan created:', {
       editType: result.object.editType,
       searchTerms: result.object.searchTerms,
       patterns: result.object.regexPatterns?.length || 0,
-      reasoning: result.object.reasoning
+      reasoning: result.object.reasoning,
     });
-    
-    // Return the search plan, not file matches
+
     return NextResponse.json({
       success: true,
-      searchPlan: result.object
+      searchPlan: result.object,
     });
-    
   } catch (error) {
     console.error('[analyze-edit-intent] Error:', error);
-    return NextResponse.json({
-      success: false,
-      error: (error as Error).message
-    }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: (error as Error).message },
+      { status: 500 }
+    );
   }
 }
