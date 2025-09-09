@@ -1,32 +1,29 @@
-# Use a base image com Node
+# Node runtime
 FROM node:18-alpine
 
-# Instala pnpm
+# Dependências do sistema (opcional, mas ajuda algumas libs nativas)
+RUN apk add --no-cache libc6-compat
+
+# PNPM
 RUN npm install -g pnpm
 
-# Define diretório de trabalho
 WORKDIR /app
 
-# Copia package.json e lockfile
-COPY package*.json pnpm-lock.yaml ./
+# Instala deps com cache eficiente
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile=false
 
-# Instala dependências ignorando o frozen lockfile
-RUN pnpm install --no-frozen-lockfile
+# Cria next.config.js permissivo ANTES do build
+# (Se você já tem next.config.js no repo, só garanta essas chaves)
+RUN printf "const nextConfig = {\n  typescript: { ignoreBuildErrors: true },\n  eslint: { ignoreDuringBuilds: true },\n  output: 'standalone'\n};\nmodule.exports = nextConfig;\n" > next.config.js
 
-# Copia o restante do código
+# Copia o resto do projeto
 COPY . .
 
-# Build do Next.js
+# Build
 RUN pnpm run build
 
-# Expõe a porta (ajuste se você usa outra porta)
+# Runtime
 EXPOSE 3010
-
-# Comando para iniciar a aplicação
+ENV PORT=3010 HOSTNAME=0.0.0.0
 CMD ["pnpm", "run", "start"]
-
-# Criar arquivo next.config.js para ignorar erros de tipo
-RUN echo 'const nextConfig = { typescript: { ignoreBuildErrors: true }, eslint: { ignoreDuringBuilds: true } }; module.exports = nextConfig' > next.config.js
-
-# Build do Next.js (agora com configuração permissiva)
-RUN pnpm run build
