@@ -3,11 +3,11 @@ import { createGroq } from '@ai-sdk/groq';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { generateObject, type LanguageModelV2 } from 'ai';
+import { generateObject, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import type { FileManifest } from '@/types/file-manifest';
 
-// --- Providers (clients) -----------------------------------------------------
+// ---- Providers (clients) ---------------------------------------------------
 const groq = createGroq({
   apiKey: process.env.GROQ_API_KEY,
 });
@@ -22,13 +22,13 @@ const openai = createOpenAI({
   baseURL: process.env.OPENAI_BASE_URL,
 });
 
-// ATENÇÃO: para Google precisamos criar o *client* e depois chamar com o model:
+// Google: crie o client e depois chame com o nome do modelo
 const googleClient = createGoogleGenerativeAI({
   apiKey: process.env.GOOGLE_API_KEY,
-  baseURL: process.env.GOOGLE_BASE_URL, // opcional, se usar proxy
+  baseURL: process.env.GOOGLE_BASE_URL, // opcional
 });
 
-// --- Schema para o plano de busca --------------------------------------------
+// ---- Schema ----------------------------------------------------------------
 const searchPlanSchema = z.object({
   editType: z.enum([
     'UPDATE_COMPONENT',
@@ -42,9 +42,13 @@ const searchPlanSchema = z.object({
 
   reasoning: z.string().describe('Explanation of the search strategy'),
 
-  searchTerms: z.array(z.string()).describe('Specific text to search for (case-insensitive). Be VERY specific - exact button text, class names, etc.'),
+  searchTerms: z.array(z.string()).describe(
+    'Specific text to search for (case-insensitive). Be VERY specific - exact button text, class names, etc.'
+  ),
 
-  regexPatterns: z.array(z.string()).optional().describe('Regex patterns for finding code structures (e.g., "className=[\\"\\\'].*header.*[\\"\\\']")'),
+  regexPatterns: z.array(z.string()).optional().describe(
+    'Regex patterns for finding code structures (e.g., "className=[\\"\\\'].*header.*[\\"\\\']")'
+  ),
 
   fileTypesToSearch: z.array(z.string()).default(['.jsx', '.tsx', '.js', '.ts']).describe('File extensions to search'),
 
@@ -75,7 +79,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Cria um resumo dos arquivos válidos
+    // Resumo de arquivos válidos
     const validFiles = Object.entries(manifest.files as Record<string, any>)
       .filter(([path]) => path.includes('.') && !path.match(/\/\d+$/));
 
@@ -103,25 +107,24 @@ export async function POST(request: NextRequest) {
       fileSummary.split('\n').slice(0, 5).join('\n')
     );
 
-    // Seleciona o modelo correto e garante o tipo LanguageModelV2
-    let aiModel: LanguageModelV2;
+    // Seleciona um LanguageModel válido
+    let aiModel: LanguageModel;
 
     if (model.startsWith('anthropic/')) {
       aiModel = anthropic(model.replace('anthropic/', ''));
     } else if (model.startsWith('openai/')) {
-      // Suporte especial ao "gpt-oss" mapeando para Groq, se for a sua intenção
+      // Se usar "gpt-oss" mas prefixado com openai/, redireciona para Groq
       if (model.includes('gpt-oss')) {
-        aiModel = groq(model); // mantém seu comportamento atual
+        aiModel = groq(model.replace(/^openai\//, ''));
       } else {
         aiModel = openai(model.replace('openai/', ''));
       }
     } else if (model.startsWith('google/')) {
-      // AQUI estava o erro: agora pegamos o *model* do client
       aiModel = googleClient(model.replace('google/', ''));
     } else if (model.startsWith('groq/')) {
       aiModel = groq(model.replace('groq/', ''));
     } else {
-      // fallback: use Groq com o nome como está
+      // fallback: tenta Groq com o nome como veio
       aiModel = groq(model);
     }
 
