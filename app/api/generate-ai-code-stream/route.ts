@@ -169,9 +169,24 @@ export async function POST(request: NextRequest) {
           
           if (manifest) {
             await sendProgress({ type: 'status', message: '🔍 Creating search plan...' });
-            
-            const fileContents = global.sandboxState.fileCache.files;
-            console.log('[generate-ai-code-stream] Files available for search:', Object.keys(fileContents).length);
+
+// Garante que o cache existe antes de usar.
+const fileCache = global.sandboxState?.fileCache;
+
+if (!fileCache || !fileCache.files) {
+  // Você pode lançar erro para falhar cedo ou apenas seguir vazio.
+  // Se quiser falhar explicitamente, descomente a linha abaixo:
+  // throw new Error('[generate-ai-code-stream] sandboxState.fileCache is not initialized. Call /api/get-sandbox-files first.');
+
+  console.warn('[generate-ai-code-stream] sandboxState.fileCache not ready; using empty map.');
+}
+
+const fileContents = fileCache?.files ?? {};
+console.log(
+  '[generate-ai-code-stream] Files available for search:',
+  Object.keys(fileContents).length
+);
+
             
             // STEP 1: Get search plan from AI
             try {
