@@ -15,7 +15,7 @@ RUN pnpm install --frozen-lockfile=false
 
 # Cria next.config.js permissivo ANTES do build
 # (Se você já tem next.config.js no repo, só garanta essas chaves)
-RUN printf "const nextConfig = {\n  typescript: { ignoreBuildErrors: true },\n  eslint: { ignoreDuringBuilds: true },\n  output: 'standalone'\n};\nmodule.exports = nextConfig;\n" > next.config.js
+RUN printf "export default { typescript: { ignoreBuildErrors: true }, eslint: { ignoreDuringBuilds: true }, output: 'standalone' };\n" > next.config.mjs
 
 # Copia o resto do projeto
 COPY . .
